@@ -21,3 +21,6 @@ resources/whisper.exe
 
 # TypeScript incremental build artefact.
 *.tsbuildinfo
+
+# Raw screen recordings for README media. Ship the compressed mp4/gif only.
+docs/media/*.mov
