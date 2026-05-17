@@ -100,15 +100,14 @@ export function ExportModal(): JSX.Element {
     });
     setStage('progress');
 
-    // Measure the live preview canvas so Studio can scale font sizes / position offsets
-    // from preview-pixel space into export-pixel space. Without this, text rendered
-    // here is correct in pixels but visually much smaller than what the editor showed.
-    let previewWidth: number | undefined;
-    const previewEl = document.querySelector<HTMLElement>('[data-preview-canvas]');
-    if (previewEl) {
-      const rect = previewEl.getBoundingClientRect();
-      if (rect.width > 0) previewWidth = rect.width;
-    }
+    // Resolution scaling: the editor preview internally uses the project's NATIVE
+    // resolution (1080-wide for 9:16, etc.) and only CSS-transforms it down to fit
+    // the visible viewport. So font sizes, position offsets, and motion-FX values
+    // are already in the right space when exporting at native resolution — we only
+    // need to scale them when exporting at a DIFFERENT resolution than the project.
+    // (Previously this measured the DISPLAY size via getBoundingClientRect, which
+    // wrongly upscaled everything by the display-to-export ratio.)
+    const previewWidth = project.width;
 
     try {
       const result = await runWebExport(

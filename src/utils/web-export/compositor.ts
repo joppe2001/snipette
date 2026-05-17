@@ -15,7 +15,7 @@ import { activeTranscriptEntry, parseTextAnimation, computeTextAnimation } from 
 import { gradeToCSS } from '@/utils/color';
 import { computeMotionFxCanvas, parseCssTransform } from './motion-fx-canvas';
 import { applyTransitionClip, transitionVisualToCanvas } from './transitions-canvas';
-import { renderTextClip } from './text-renderer';
+import { measureTextBlock, renderTextClip } from './text-renderer';
 import type { FrameSource } from './frame-source';
 import type { Clip, ColorGrade, MediaAsset, Track, Transition } from '@shared/types';
 
@@ -267,10 +267,53 @@ export async function renderFrame(
       // canvas's transformed coordinate system.
       ctx.scale(userSclX * animXform.scaleX, userSclY * animXform.scaleY);
 
+      // Compound layout: when there's a subtitle row, compute both rows'
+      // rendered heights up-front so we can stack them without overlap.
+      // The editor preview gets this for free via CSS flexbox column;
+      // Canvas2D has no flow layout, so we measure + place manually.
+      // Anchor convention matches the editor: the COMPOUND'S BOTTOM EDGE sits
+      // at baseY (the bottom-12% line). Everything stacks upward from there.
+      const wrapWidth = (W * 0.8) / S;
+      const subText = transcriptActive ? transcriptActive.subtitle : anim.subtitle_text;
+      let subStyle: Record<string, unknown> = style;
+      if (anim.subtitle_style_json) {
+        try {
+          subStyle = JSON.parse(anim.subtitle_style_json) as Record<string, unknown>;
+        } catch {
+          // Fall back to the title style if the subtitle JSON is malformed.
+        }
+      }
+      const hasSubtitle = !!(subText && subText.length > 0);
+      // Vertical gap between the two rows (in preview-pixel units).
+      const stackGap = 6;
+
+      let titleCenterY = 0;
+      let subCenterY = 0;
+      if (hasSubtitle) {
+        const titleBlock = measureTextBlock(
+          ctx,
+          renderedText,
+          style as Partial<import('@/utils/text-templates').TextStyleFull>,
+          wrapWidth,
+        );
+        const subBlock = measureTextBlock(
+          ctx,
+          subText as string,
+          subStyle as Partial<import('@/utils/text-templates').TextStyleFull>,
+          wrapWidth,
+        );
+        // Anchor the compound's bottom edge at the origin (which the outer
+        // ctx.translate already places at baseY). Then walk upward:
+        //   subtitle bottom = 0   → subtitle center = -subBlock.height / 2
+        //   title bottom    = -subBlock.height - gap → title center = title bottom - titleBlock.height/2
+        subCenterY = -subBlock.height / 2;
+        titleCenterY = -subBlock.height - stackGap - titleBlock.height / 2;
+      }
+
       renderTextClip({
         ctx,
         centerX: 0,
-        centerY: 0,
+        centerY: titleCenterY,
         text: renderedText,
         style,
         visual: { ...visual, opacity: effectiveOpacity },
@@ -278,39 +321,19 @@ export async function renderFrame(
         // Wrap at 80% of canvas width — same constraint the preview's wrapper enforces
         // via `maxWidth: 80%`. We're inside a scaled CTM (S = preview→export ratio), so
         // the wrap width has to be expressed in pre-scale units.
-        maxWidth: (W * 0.8) / S,
+        maxWidth: wrapWidth,
       });
 
-      // Compound BlockReveal: paint the subtitle row stacked under the title
-      // so the studio export matches what the preview shows. The IN-window
-      // animation (block reveal + drop) is not replicated in the Canvas2D
-      // path — it renders as flat stacked text, which is acceptable since
-      // BlockReveal's signature is a brief opening flourish followed by a
-      // long settled hold (which the export DOES match exactly).
-      const subText = transcriptActive ? transcriptActive.subtitle : anim.subtitle_text;
-      if (subText && subText.length > 0) {
-        let subStyle: Record<string, unknown> = style;
-        if (anim.subtitle_style_json) {
-          try {
-            subStyle = JSON.parse(anim.subtitle_style_json) as Record<string, unknown>;
-          } catch {
-            // Fall back to the title style if the subtitle JSON is malformed.
-          }
-        }
-        const titleFs = typeof style.font_size === 'number' ? (style.font_size as number) : 56;
-        // Offset the subtitle below the title by roughly the title's font
-        // size + a small visual gap. Coordinate space here is preview-pixels
-        // (we already applied the export scale via ctx.scale(S, S) above).
-        const subOffsetY = titleFs * 0.85 + 8;
+      if (hasSubtitle) {
         renderTextClip({
           ctx,
           centerX: 0,
-          centerY: subOffsetY,
-          text: subText,
+          centerY: subCenterY,
+          text: subText as string,
           style: subStyle,
           visual: { ...visual, opacity: effectiveOpacity },
           relativeMs,
-          maxWidth: (W * 0.8) / S,
+          maxWidth: wrapWidth,
         });
       }
 

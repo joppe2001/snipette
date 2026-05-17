@@ -104,6 +104,38 @@ function wrapText(ctx: Ctx, text: string, maxWidth: number): string[] {
   return out.length > 0 ? out : [''];
 }
 
+/**
+ * Predict how tall a text block will render at given style + wrap width, in
+ * the same coordinate space `renderTextClip` paints into. Used by the
+ * compositor to stack compound title + subtitle rows without overlap — we
+ * can't rely on `renderTextClip` returning the rendered metrics, and the
+ * editor preview gets stacking "for free" via CSS flexbox.
+ *
+ * Returns `{ lines, height }` where `height = lines * line_height * font_size`.
+ */
+export function measureTextBlock(
+  ctx: Ctx,
+  text: string,
+  style: Partial<TextStyleFull>,
+  maxWidth: number,
+): { lines: number; height: number; lineHeight: number } {
+  const fontSize = style.font_size ?? 32;
+  const fontWeight = style.font_weight ?? 700;
+  const fontStyle = style.italic ? 'italic' : 'normal';
+  ctx.save();
+  ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${quoteFontFamily(style.font_family)}`;
+  try {
+    (ctx as unknown as { letterSpacing: string }).letterSpacing = `${style.letter_spacing ?? 0.02}em`;
+  } catch {
+    // letterSpacing not supported — measurement falls back to natural advance.
+  }
+  const transformed = applyTextTransform(text, style.text_transform);
+  const lines = maxWidth > 0 ? wrapText(ctx, transformed, maxWidth) : transformed.split('\n');
+  ctx.restore();
+  const lineHeight = (style.line_height ?? 1.05) * fontSize;
+  return { lines: lines.length, height: lines.length * lineHeight, lineHeight };
+}
+
 function applyTextTransform(text: string, transform: TextStyleFull['text_transform']): string {
   switch (transform) {
     case 'uppercase':
