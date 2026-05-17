@@ -9,6 +9,7 @@ import { fileUrl } from '@/utils/file';
 import { gradeToCSS } from '@/utils/color';
 import { computeTransitionStates, transitionFadeMultiplier, transitionWindow, type TransitionVisual } from '@/utils/transitions';
 import {
+  activeTranscriptEntry,
   computeKaraokeWordStates,
   computeTextAnimation,
   parseTextAnimation,
@@ -566,9 +567,24 @@ export function PreviewCanvas(): JSX.Element {
             />
           ))}
 
-        {/* Text overlays */}
+        {/* Text overlays. A clip needs to render whenever it has *something* to
+            show: a plain `text_content`, a compound subtitle row, or — for
+            transcript-mode clips — an entries array (the actual visible text
+            lives on the active entry, picked at render time). */}
         {activeClips
-          .filter((c) => c.text_content)
+          .filter((c) => {
+            if (c.text_content) return true;
+            if (!c.text_animation_json) return false;
+            try {
+              const raw = JSON.parse(c.text_animation_json) as Record<string, unknown>;
+              return (
+                Array.isArray(raw.transcript_entries) ||
+                typeof raw.subtitle_text === 'string'
+              );
+            } catch {
+              return false;
+            }
+          })
           .map((c) => (
             <TextOverlay
               key={c.id}
@@ -1080,6 +1096,24 @@ function TextOverlay({
   const anim = parseTextAnimation(clip.text_animation_json);
   const relativeMs = playheadMs - clip.start_time_ms;
   const visual = computeTextAnimation(clip.text_content ?? '', relativeMs, clip.duration_ms, anim);
+  // Transcript mode: when `transcript_entries` is set, the clip behaves like a
+  // live transcript — at any given moment only the entry whose window contains
+  // the playhead is shown. We compute the active entry up-front so the rest of
+  // the render uses it as the source of truth for `text` + subtitle text.
+  const transcriptActive = activeTranscriptEntry(anim.transcript_entries, relativeMs);
+  const transcriptMode = anim.transcript_entries !== undefined && anim.transcript_entries.length > 0;
+  // Optional fade at entry boundaries. Snap-cuts (`transcript_fade_ms` 0/undefined)
+  // give the "live transcript" feel; a small fade smooths the swap.
+  const transcriptFadeMult = (() => {
+    if (!transcriptMode || !transcriptActive) return 1;
+    const fade = anim.transcript_fade_ms ?? 0;
+    if (fade <= 0) return 1;
+    const intoEntry = relativeMs - transcriptActive.startMs;
+    const beforeEnd = transcriptActive.endMs - relativeMs;
+    const a = Math.min(1, Math.max(0, intoEntry / fade));
+    const b = Math.min(1, Math.max(0, beforeEnd / fade));
+    return Math.min(a, b);
+  })();
   // Hide pre-mounted text overlays (warmup-only). Without this, the BlockReveal
   // block — which is rendered at opacity 1 during the IN window — shows BEFORE
   // the clip's actual start_time_ms because the animation engine treats
@@ -1090,15 +1124,25 @@ function TextOverlay({
   const rawOpacity = anim.fade_with_transition
     ? visual.opacity * transitionFadeMult
     : visual.opacity;
-  const effectiveOpacity = inOwnTimeRange ? rawOpacity : 0;
+  // Transcript mode controls its own visibility: only show when an entry is active.
+  const transcriptOpacity = transcriptMode
+    ? (transcriptActive ? transcriptFadeMult : 0)
+    : 1;
+  const effectiveOpacity = inOwnTimeRange ? rawOpacity * transcriptOpacity : 0;
   // In-place edit mode — double-click the overlay to edit text directly on the canvas.
   // While editing, suppress typewriter clipping + animation transforms so the user sees
   // their full text under their cursor.
   const [isEditing, setIsEditing] = React.useState(false);
   const editRef = React.useRef<HTMLSpanElement | null>(null);
+  // In transcript mode the visible text comes from the active entry, not the
+  // clip's static `text_content`. When no entry is active we fall back to the
+  // clip's text_content so editing the clip without an active entry still has
+  // something to show in the inspector preview.
   const text = isEditing
     ? clip.text_content ?? ''
-    : visual.visibleText ?? clip.text_content ?? '';
+    : transcriptMode && transcriptActive
+      ? transcriptActive.title
+      : visual.visibleText ?? clip.text_content ?? '';
   const isTypewriting = !isEditing && visual.visibleText !== undefined && relativeMs < anim.in_ms;
   const baseRotation = typeof style.rotation_deg === 'number' ? style.rotation_deg : 0;
   const selected = useTimelineStore((s) => s.selectedClipIds.includes(clip.id));
@@ -1534,6 +1578,7 @@ function TextOverlay({
         />
       ) : visual.blockRevealProgress !== undefined ||
         anim.subtitle_text !== undefined ||
+        transcriptMode ||
         anim.in_preset === 'BlockReveal' ? (
         <BlockRevealText
           key="textoverlay-blockreveal"
@@ -1546,7 +1591,13 @@ function TextOverlay({
           // back to 0 here would re-show the block; falling back to 1 settles
           // both rows correctly.
           progress={visual.blockRevealProgress}
-          subtitleText={anim.subtitle_text}
+          // Transcript mode: pull the subtitle text from the active entry so
+          // both rows swap together each time the playhead crosses a boundary.
+          subtitleText={
+            transcriptMode
+              ? transcriptActive?.subtitle ?? ''
+              : anim.subtitle_text
+          }
           subtitleStyleJson={anim.subtitle_style_json}
         />
       ) : visual.letterWaveProgress !== undefined ? (

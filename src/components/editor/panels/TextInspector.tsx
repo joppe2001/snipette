@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTimelineStore } from '@/store/timeline.store';
 import { useProjectStore } from '@/store/project.store';
 import { useEditorStore } from '@/store/editor.store';
@@ -17,6 +17,7 @@ import {
   type TextAnimIn,
   type TextAnimLoop,
   type TextAnimOut,
+  type TranscriptEntry,
 } from '@/utils/text-animation';
 import {
   COMPOUND_TEMPLATES,
@@ -178,6 +179,10 @@ export function TextInspector({ clip }: { clip: Clip | null }): JSX.Element {
   // Compound clips carry their subtitle text + style on the animation spec, so
   // the inspector can show two text fields (Title + Subtitle) instead of one.
   const isCompound = animation.subtitle_text !== undefined;
+  // Transcript-mode clips own their visible text/subtitle in the entries list,
+  // not in the static title/subtitle fields, so we hide those plain inputs to
+  // avoid two competing sources of truth.
+  const isTranscript = animation.transcript_entries !== undefined;
   const [subtitleDraft, setSubtitleDraft] = useState<string>(animation.subtitle_text ?? '');
   // Re-sync local subtitle text when the selected clip changes — same pattern
   // the regular content field relies on (it keys off `content` initial state).
@@ -853,6 +858,7 @@ export function TextInspector({ clip }: { clip: Clip | null }): JSX.Element {
       </InspectorSection>
 
       <InspectorSection title="Text" defaultOpen>
+        {!isTranscript && (
         <Field label={isCompound ? 'Title' : 'Content'}>
           <textarea
             value={content}
@@ -882,74 +888,75 @@ export function TextInspector({ clip }: { clip: Clip | null }): JSX.Element {
             }}
           />
         </Field>
+        )}
+        {isCompound && !isTranscript && (
+          <Field label="Subtitle">
+            <textarea
+              value={subtitleDraft}
+              onChange={(e) => {
+                setSubtitleDraft(e.target.value);
+                // Live-update so the preview reflects each keystroke. In real
+                // clip mode we mirror through updateLocal; in draft mode the
+                // draft state IS the source of truth.
+                if (isDraft) {
+                  const nextAnim = { ...animation, subtitle_text: e.target.value };
+                  setDraft((prev) => ({
+                    ...prev,
+                    text_animation_json: JSON.stringify(nextAnim),
+                  }));
+                } else {
+                  const nextAnim = { ...animation, subtitle_text: e.target.value };
+                  updateLocal(clip!.id, {
+                    text_animation_json: JSON.stringify(nextAnim),
+                  });
+                }
+              }}
+              onBlur={() => commitAnim({ subtitle_text: subtitleDraft })}
+              style={{
+                background: 'var(--bg-base)',
+                borderRadius: 6,
+                padding: '8px 10px',
+                border: '1px solid var(--border-subtle)',
+                fontSize: 12,
+                color: 'var(--text-primary)',
+                minHeight: 36,
+                width: '100%',
+                resize: 'vertical',
+              }}
+            />
+          </Field>
+        )}
         {isCompound && (
-          <>
-            <Field label="Subtitle">
-              <textarea
-                value={subtitleDraft}
-                onChange={(e) => {
-                  setSubtitleDraft(e.target.value);
-                  // Live-update so the preview reflects each keystroke. In real
-                  // clip mode we mirror through updateLocal; in draft mode the
-                  // draft state IS the source of truth.
-                  if (isDraft) {
-                    const nextAnim = { ...animation, subtitle_text: e.target.value };
-                    setDraft((prev) => ({
-                      ...prev,
-                      text_animation_json: JSON.stringify(nextAnim),
-                    }));
-                  } else {
-                    const nextAnim = { ...animation, subtitle_text: e.target.value };
-                    updateLocal(clip!.id, {
-                      text_animation_json: JSON.stringify(nextAnim),
-                    });
-                  }
-                }}
-                onBlur={() => commitAnim({ subtitle_text: subtitleDraft })}
-                style={{
-                  background: 'var(--bg-base)',
-                  borderRadius: 6,
-                  padding: '8px 10px',
-                  border: '1px solid var(--border-subtle)',
-                  fontSize: 12,
-                  color: 'var(--text-primary)',
-                  minHeight: 36,
-                  width: '100%',
-                  resize: 'vertical',
-                }}
-              />
-            </Field>
-            <div style={{ marginTop: 6, marginBottom: 6 }}>
-              <div className="sn-section-label" style={{ marginBottom: 6, fontSize: 9 }}>
-                Subtitle style
-              </div>
-              <FieldRow>
-                <Field label="Size">
-                  <NumInput
-                    value={subtitleStyle.font_size}
-                    onChange={(v) => commitSubtitleStyle({ font_size: v })}
-                  />
-                </Field>
-                <Field label="Weight">
-                  <NumInput
-                    value={subtitleStyle.font_weight}
-                    onChange={(v) => commitSubtitleStyle({ font_weight: v })}
-                  />
-                </Field>
-                <Field label="Color">
-                  <ColorPicker
-                    color={subtitleStyle.color}
-                    onChange={(c) => {
-                      pushRecent(c);
-                      commitSubtitleStyle({ color: c });
-                    }}
-                    recent={recentColors}
-                    onPickRecent={pushRecent}
-                  />
-                </Field>
-              </FieldRow>
+          <div style={{ marginTop: 6, marginBottom: 6 }}>
+            <div className="sn-section-label" style={{ marginBottom: 6, fontSize: 9 }}>
+              Subtitle style
             </div>
-          </>
+            <FieldRow>
+              <Field label="Size">
+                <NumInput
+                  value={subtitleStyle.font_size}
+                  onChange={(v) => commitSubtitleStyle({ font_size: v })}
+                />
+              </Field>
+              <Field label="Weight">
+                <NumInput
+                  value={subtitleStyle.font_weight}
+                  onChange={(v) => commitSubtitleStyle({ font_weight: v })}
+                />
+              </Field>
+              <Field label="Color">
+                <ColorPicker
+                  color={subtitleStyle.color}
+                  onChange={(c) => {
+                    pushRecent(c);
+                    commitSubtitleStyle({ color: c });
+                  }}
+                  recent={recentColors}
+                  onPickRecent={pushRecent}
+                />
+              </Field>
+            </FieldRow>
+          </div>
         )}
         <FieldRow>
           <Field label="Font" flex={2}>
@@ -1234,6 +1241,28 @@ export function TextInspector({ clip }: { clip: Clip | null }): JSX.Element {
         </FieldRow>
       </InspectorSection>
 
+      {animation.transcript_entries !== undefined && (
+        <InspectorSection title="Transcript" defaultOpen>
+          <TranscriptEditor
+            entries={animation.transcript_entries}
+            fadeMs={animation.transcript_fade_ms ?? 0}
+            clipDurationMs={clipOrDraft.duration_ms}
+            isDraft={isDraft}
+            commitAnim={(next) => commitAnim(next as Partial<typeof animation>)}
+            pushHistory={() => {
+              if (!isDraft) pushHistory();
+            }}
+            pushToast={pushToast}
+            assets={assets.map((a) => ({
+              id: a.id,
+              type: a.type,
+              duration_ms: a.duration_ms,
+              original_path: a.original_path,
+            }))}
+          />
+        </InspectorSection>
+      )}
+
       <InspectorSection title="Captions">
         {isDraft ? (
           <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
@@ -1376,6 +1405,456 @@ function PresetCard({
       <span style={{ fontSize: 8.5, opacity: 0.9, letterSpacing: 0.3, textAlign: 'center' }}>{name}</span>
     </button>
   );
+}
+
+/**
+ * Editor for the transcript-mode entry list. The clip owns the array; this
+ * component mutates a local copy and bubbles each change up via `commitAnim`
+ * so the existing real-clip / draft persistence path handles the write. Time
+ * inputs all operate in milliseconds RELATIVE to the clip's start.
+ */
+function TranscriptEditor({
+  entries,
+  fadeMs,
+  clipDurationMs,
+  isDraft,
+  commitAnim,
+  pushHistory,
+  pushToast,
+  assets,
+}: {
+  entries: TranscriptEntry[];
+  fadeMs: number;
+  clipDurationMs: number;
+  isDraft: boolean;
+  commitAnim: (next: Partial<TextAnimationSpec>) => void;
+  pushHistory: () => void;
+  pushToast: (t: { kind: 'success' | 'error' | 'info'; message: string }) => void;
+  assets: Array<{ id: string; type: string; duration_ms: number | null; original_path: string }>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(0);
+  // Only assets that actually carry audio are valid transcribe sources. Images
+  // don't, pure-video without audio doesn't either — but we don't have a
+  // has_audio flag here, so we keep this lenient: anything that's not an image
+  // is offered, and Whisper will simply produce no segments if there's nothing
+  // to hear.
+  const audioCandidates = assets.filter((a) => a.type !== 'image');
+  const [pickedAssetId, setPickedAssetId] = useState<string>(() => {
+    const audio = audioCandidates.find((a) => a.type === 'audio');
+    return (audio ?? audioCandidates[0])?.id ?? '';
+  });
+  // Re-pick if the user imported a new asset while the panel was open and the
+  // current pick disappeared (e.g. they deleted a clip).
+  useEffect(() => {
+    if (!audioCandidates.some((a) => a.id === pickedAssetId)) {
+      const audio = audioCandidates.find((a) => a.type === 'audio');
+      setPickedAssetId((audio ?? audioCandidates[0])?.id ?? '');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioCandidates.map((a) => a.id).join('|')]);
+  const playheadMs = useTimelineStore((s) => s.playheadMs);
+  const selectedClipIds = useTimelineStore((s) => s.selectedClipIds);
+  const clips = useTimelineStore((s) => s.clips);
+  const setPlayhead = useTimelineStore((s) => s.setPlayhead);
+  // We need the clip's start_time_ms to convert between absolute (timeline)
+  // and relative (clip-local) ms. The inspector is bound to the selected clip,
+  // so look it up here once per render.
+  const clip = clips.find((c) => selectedClipIds.includes(c.id)) ?? null;
+  const clipStart = clip?.start_time_ms ?? 0;
+  // Playhead time RELATIVE to this clip — clamped to the clip's window so
+  // "use playhead" doesn't write nonsense times when scrubbing outside.
+  const relMs = Math.max(0, Math.min(clipDurationMs, playheadMs - clipStart));
+
+  const persist = (next: TranscriptEntry[], extras?: Partial<TextAnimationSpec>) => {
+    pushHistory();
+    // Always keep entries sorted by start time so the "swap" is monotonic.
+    const sorted = [...next].sort((a, b) => a.startMs - b.startMs);
+    commitAnim({ transcript_entries: sorted, ...extras });
+  };
+
+  const addEntry = () => {
+    const lastEnd = entries.length > 0 ? Math.max(...entries.map((e) => e.endMs)) : 0;
+    // Default to a 1.5s window starting at the later of playhead or last entry's end.
+    const startMs = Math.max(relMs, lastEnd);
+    const endMs = Math.min(clipDurationMs, startMs + 1500);
+    const next: TranscriptEntry = { startMs, endMs, title: '', subtitle: '' };
+    persist([...entries, next]);
+  };
+
+  /**
+   * "Capture next": set the last entry's end to the playhead, then start a new
+   * entry at the playhead. Lets the editor play the video and tap one button
+   * each time the spoken word changes — the entries snap to the speech.
+   */
+  const captureNext = () => {
+    if (entries.length === 0) {
+      addEntry();
+      return;
+    }
+    const sorted = [...entries].sort((a, b) => a.startMs - b.startMs);
+    const last = sorted[sorted.length - 1];
+    // Close the current entry at the playhead (but never shorter than 100ms).
+    const closedEnd = Math.max(last.startMs + 100, relMs);
+    sorted[sorted.length - 1] = { ...last, endMs: closedEnd };
+    const newEntry: TranscriptEntry = {
+      startMs: closedEnd,
+      endMs: Math.min(clipDurationMs, closedEnd + 1500),
+      title: '',
+      subtitle: '',
+    };
+    persist([...sorted, newEntry]);
+  };
+
+  const updateEntry = (idx: number, patch: Partial<TranscriptEntry>) => {
+    const next = entries.map((e, i) => (i === idx ? { ...e, ...patch } : e));
+    persist(next);
+  };
+
+  const removeEntry = (idx: number) => {
+    persist(entries.filter((_, i) => i !== idx));
+  };
+
+  /**
+   * Split entry `idx` at the playhead. Useful when Whisper merged two distinct
+   * phrases into one segment — drop the playhead at the seam and click split.
+   */
+  const splitAtPlayhead = (idx: number) => {
+    const e = entries[idx];
+    if (!e) return;
+    // Need at least 100ms on either side of the cut to avoid degenerate entries.
+    if (relMs <= e.startMs + 100 || relMs >= e.endMs - 100) {
+      pushToast({ kind: 'info', message: 'Move the playhead inside the entry, away from its edges.' });
+      return;
+    }
+    const a: TranscriptEntry = { ...e, endMs: relMs };
+    const b: TranscriptEntry = { ...e, startMs: relMs, title: '', subtitle: '' };
+    const next = [...entries];
+    next.splice(idx, 1, a, b);
+    persist(next);
+  };
+
+  /** Merge entry `idx` with the next one — combines text, takes the wider window. */
+  const mergeWithNext = (idx: number) => {
+    const sorted = [...entries].sort((a, b) => a.startMs - b.startMs);
+    const realIdx = sorted.findIndex((e) => e === entries[idx]);
+    if (realIdx < 0 || realIdx >= sorted.length - 1) return;
+    const a = sorted[realIdx];
+    const b = sorted[realIdx + 1];
+    const merged: TranscriptEntry = {
+      startMs: a.startMs,
+      endMs: b.endMs,
+      title: [a.title, b.title].filter(Boolean).join(' '),
+      subtitle: [a.subtitle, b.subtitle].filter(Boolean).join(' '),
+    };
+    const next = sorted.filter((_, i) => i !== realIdx && i !== realIdx + 1);
+    persist([...next, merged]);
+  };
+
+  /**
+   * Run Whisper on the project's main speech asset and replace the entries
+   * with the resulting segments. Each segment's text becomes the entry's
+   * `subtitle` (the original-language line); `title` is left empty for the
+   * editor to type the translation. Existing entries are wiped — Whisper is
+   * the source of truth here, partial merges would mostly produce a mess.
+   */
+  const transcribe = async () => {
+    if (busy) return;
+    const speech = audioCandidates.find((a) => a.id === pickedAssetId);
+    if (!speech) {
+      pushToast({ kind: 'info', message: 'Pick an audio or video clip to transcribe.' });
+      return;
+    }
+    const whisperAvailable = await window.snipette.system.whisperAvailable();
+    if (!whisperAvailable) {
+      pushToast({
+        kind: 'error',
+        message:
+          'Whisper not installed. Place a whisper.cpp binary at resources/whisper and ggml-base.en.bin, then restart Snipette.',
+      });
+      return;
+    }
+    if (
+      entries.length > 0 &&
+      !window.confirm(
+        `Transcribing will REPLACE the ${entries.length} existing entr${entries.length === 1 ? 'y' : 'ies'}. Continue?`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setProgress(0);
+    const off = window.snipette.captions.onProgress((p) => setProgress(p.percent));
+    try {
+      const segments = await window.snipette.captions.transcribe(speech.id);
+      // Whisper segment times are absolute (relative to the speech asset's own
+      // start, which is the same as project time for assets dropped at 0). The
+      // transcript clip's entries are RELATIVE to the clip's start_time_ms, so
+      // we shift each segment by -clipStart and clamp into the clip's window.
+      const next: TranscriptEntry[] = segments
+        .map((seg) => {
+          const startMs = Math.max(0, seg.startMs - clipStart);
+          const endMs = Math.min(clipDurationMs, seg.endMs - clipStart);
+          return { startMs, endMs, title: '', subtitle: seg.text.trim() };
+        })
+        .filter((e) => e.endMs > e.startMs + 50);
+      const fileName = speech.original_path.split('/').pop() ?? 'source';
+      if (next.length === 0) {
+        pushToast({
+          kind: 'info',
+          message: `Whisper produced 0 segments inside this transcript clip's time range (from ${fileName}). Move the clip to cover the speech.`,
+        });
+        return;
+      }
+      pushHistory();
+      // Skip the persist sort step — Whisper segments are already in order.
+      commitAnim({ transcript_entries: next });
+      pushToast({
+        kind: 'success',
+        message: `Loaded ${next.length} segments from ${fileName}. Type translations into the top row.`,
+      });
+    } catch (e) {
+      pushToast({
+        kind: 'error',
+        message: e instanceof Error ? e.message : 'Transcription failed.',
+      });
+    } finally {
+      off();
+      setBusy(false);
+      setProgress(0);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 10.5, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.45 }}>
+        Each entry shows for its own time window. Use <b>Transcribe</b> to fill
+        the bottom row from your speech with Whisper, then type translations
+        into the top row. Or build it by hand with <b>Add entry</b> /
+        <b> Capture next</b>.
+      </div>
+
+      <div style={{ marginBottom: 8 }}>
+        <div className="sn-section-label" style={{ marginBottom: 6, fontSize: 9 }}>
+          Source clip
+        </div>
+        <select
+          value={pickedAssetId}
+          onChange={(e) => setPickedAssetId(e.target.value)}
+          disabled={busy || audioCandidates.length === 0}
+          style={{
+            width: '100%',
+            padding: '7px 8px',
+            background: 'var(--bg-base)',
+            color: 'var(--text-primary)',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 6,
+            fontSize: 11,
+            cursor: 'pointer',
+          }}
+        >
+          {audioCandidates.length === 0 && <option value="">(no audio/video clips imported)</option>}
+          {audioCandidates.map((a) => {
+            const name = a.original_path.split('/').pop() ?? a.id;
+            const tag = a.type === 'audio' ? '🎙' : '🎬';
+            return (
+              <option key={a.id} value={a.id}>
+                {tag} {name}
+              </option>
+            );
+          })}
+        </select>
+      </div>
+
+      <button
+        onClick={() => void transcribe()}
+        className="sn-btn-primary"
+        disabled={busy || isDraft || !pickedAssetId}
+        title={
+          isDraft
+            ? 'Place the clip first'
+            : !pickedAssetId
+              ? 'Pick a source clip first'
+              : 'Transcribe the picked clip with Whisper into entries'
+        }
+        style={{ width: '100%', justifyContent: 'center', marginBottom: 10 }}
+      >
+        <Icons.Mic size={12} /> {busy ? `Transcribing… ${progress}%` : 'Transcribe from audio'}
+      </button>
+
+      <FieldRow>
+        <Field label={`Fade · ${fadeMs} ms`}>
+          <Slider
+            value={fadeMs}
+            min={0}
+            max={400}
+            step={10}
+            onChange={(v) => commitAnim({ transcript_fade_ms: Math.round(v) })}
+          />
+        </Field>
+      </FieldRow>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+        {entries.length === 0 && (
+          <div
+            style={{
+              fontSize: 11,
+              color: 'var(--text-muted)',
+              padding: 12,
+              border: '1px dashed var(--border-subtle)',
+              borderRadius: 6,
+              textAlign: 'center',
+            }}
+          >
+            No entries yet. Click <b>Add entry</b> to begin.
+          </div>
+        )}
+        {entries.map((e, idx) => {
+          const isActive = relMs >= e.startMs && relMs < e.endMs;
+          return (
+            <div
+              key={idx}
+              style={{
+                padding: 8,
+                border: `1px solid ${isActive ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
+                background: isActive ? 'rgba(200,242,58,0.05)' : 'var(--bg-base)',
+                borderRadius: 6,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span
+                  className="mono"
+                  style={{ fontSize: 10, color: 'var(--text-muted)', minWidth: 18 }}
+                >
+                  {String(idx + 1).padStart(2, '0')}
+                </span>
+                <button
+                  onClick={() => setPlayhead(clipStart + e.startMs)}
+                  className="mono"
+                  title="Seek playhead to this entry's start"
+                  style={{
+                    fontSize: 10,
+                    color: isActive ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                    background: 'transparent',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: 0,
+                  }}
+                >
+                  {formatRel(e.startMs)} → {formatRel(e.endMs)}
+                </button>
+                <div style={{ flex: 1 }} />
+                <button
+                  onClick={() => updateEntry(idx, { startMs: Math.min(e.endMs - 50, relMs) })}
+                  title="Set start to playhead"
+                  style={timeBtnStyle}
+                >
+                  ⟸ start
+                </button>
+                <button
+                  onClick={() => updateEntry(idx, { endMs: Math.max(e.startMs + 50, relMs) })}
+                  title="Set end to playhead"
+                  style={timeBtnStyle}
+                >
+                  end ⟹
+                </button>
+                <button
+                  onClick={() => splitAtPlayhead(idx)}
+                  title="Split this entry at the playhead"
+                  style={timeBtnStyle}
+                >
+                  ⫶ split
+                </button>
+                <button
+                  onClick={() => mergeWithNext(idx)}
+                  title="Merge with the next entry"
+                  disabled={idx >= entries.length - 1}
+                  style={{ ...timeBtnStyle, opacity: idx >= entries.length - 1 ? 0.4 : 1 }}
+                >
+                  ⇣ merge
+                </button>
+                <button
+                  onClick={() => removeEntry(idx)}
+                  title="Delete entry"
+                  style={{
+                    width: 20,
+                    height: 20,
+                    fontSize: 12,
+                    color: 'var(--text-muted)',
+                    background: 'transparent',
+                    border: 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              <input
+                value={e.title}
+                placeholder="Translation"
+                onChange={(ev) => updateEntry(idx, { title: ev.target.value })}
+                style={transcriptInputStyle}
+              />
+              <input
+                value={e.subtitle}
+                placeholder="Original"
+                onChange={(ev) => updateEntry(idx, { subtitle: ev.target.value })}
+                style={transcriptInputStyle}
+              />
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
+        <button onClick={addEntry} className="sn-btn-ghost" style={{ flex: 1, padding: '8px 10px', fontSize: 11 }}>
+          <Icons.PlusSm size={12} /> Add entry
+        </button>
+        <button
+          onClick={captureNext}
+          className="sn-btn-primary"
+          style={{ flex: 1, padding: '8px 10px', fontSize: 11 }}
+          disabled={isDraft}
+          title={isDraft ? 'Place the clip first' : 'Snap current end to playhead and start a new entry'}
+        >
+          Capture next ⟶
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const timeBtnStyle: React.CSSProperties = {
+  padding: '3px 6px',
+  fontSize: 9.5,
+  color: 'var(--text-secondary)',
+  background: 'var(--bg-surface)',
+  border: '1px solid var(--border-subtle)',
+  borderRadius: 4,
+  cursor: 'pointer',
+  fontWeight: 600,
+};
+
+const transcriptInputStyle: React.CSSProperties = {
+  background: 'var(--bg-surface)',
+  borderRadius: 4,
+  padding: '6px 8px',
+  border: '1px solid var(--border-subtle)',
+  fontSize: 12,
+  color: 'var(--text-primary)',
+  width: '100%',
+  outline: 'none',
+};
+
+function formatRel(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  const cs = Math.floor((ms % 1000) / 10);
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
 }
 
 function slug(name: string): string {

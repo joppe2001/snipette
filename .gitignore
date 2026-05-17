@@ -1,4 +1,4 @@
-node_modules
+node_modules/
 out
 release
 dist
@@ -11,3 +11,13 @@ dist
 
 
 HANDOFF.md
+
+# Whisper binaries & models — large, machine-specific. Keep them local.
+resources/ggml-base.en.bin
+resources/ggml-base.bin
+resources/ggml-*.bin
+resources/whisper
+resources/whisper.exe
+
+# TypeScript incremental build artefact.
+*.tsbuildinfo

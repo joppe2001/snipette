@@ -60,6 +60,61 @@ export interface CompoundTemplate {
  */
 export const COMPOUND_TEMPLATES: CompoundTemplate[] = [
   {
+    id: 'translation',
+    name: 'Translation',
+    totalDurationMs: 2500,
+    clip: {
+      titleText: 'Translation',
+      subtitleText: 'Original word',
+      durationMs: 2500,
+      positionY: 0,
+      // Title row paints ABOVE the subtitle row (see PreviewCanvas BlockRevealText
+      // resting branch). For translation videos the translation lives above the
+      // spoken word, so the title carries the translation and the subtitle the
+      // original. Both rows default to clean serif/sans pairings the user can
+      // restyle in the inspector.
+      titleStyle: {
+        font_family: 'Sora',
+        font_size: 48,
+        font_weight: 600,
+        color: '#C8F23A',
+        align: 'center',
+        line_height: 1.05,
+        letter_spacing: 0.02,
+        stroke_color: '#0A0A0C',
+        stroke_width: 0,
+        bg_enabled: false,
+        bg_color: '#0A0A0C',
+        bg_padding: 0,
+        bg_radius: 0,
+      },
+      subtitleStyle: {
+        font_family: 'Barlow Condensed',
+        font_size: 84,
+        font_weight: 800,
+        color: '#FFFFFF',
+        align: 'center',
+        line_height: 1,
+        letter_spacing: 0.02,
+        stroke_color: '#0A0A0C',
+        stroke_width: 2,
+        bg_enabled: false,
+        bg_color: '#0A0A0C',
+        bg_padding: 0,
+        bg_radius: 0,
+      },
+      // Static — no in/out/loop animation. The user explicitly wants the pair
+      // to just appear for the speech span.
+      animation: {
+        in_preset: 'None',
+        in_ms: 0,
+        out_preset: 'None',
+        out_ms: 0,
+        loop_preset: 'None',
+      },
+    },
+  },
+  {
     id: 'block-reveal',
     name: 'Block Reveal Title',
     totalDurationMs: 3000,

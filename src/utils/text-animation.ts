@@ -118,6 +118,36 @@ export interface TextAnimationSpec {
    * `text_style_json`. Optional; absent → renderer reuses the title style.
    */
   subtitle_style_json?: string;
+  /**
+   * Transcript mode: a single text clip that paints DIFFERENT title/subtitle
+   * pairs at different times — like a live transcript that swaps the visible
+   * text on the fly. Each entry's `startMs` / `endMs` are RELATIVE to the
+   * clip's start_time_ms (same convention as `word_timings`). When the
+   * playhead is inside an entry's window the renderer paints that entry; when
+   * it sits in a gap between entries the overlay is hidden.
+   *
+   * Used for translation/transcript workflows where the editor adds the
+   * overlay once, then types many short title+subtitle pairs that line up to
+   * the spoken words. Shares the same compound title/subtitle styles
+   * (`text_style_json` for the title row, `subtitle_style_json` for the
+   * subtitle row) — entries only carry their text, not per-entry styles.
+   *
+   * `fade_ms` is an optional ease-in/out at each entry's boundary; 0 means
+   * snap-cuts (the "live transcript" feel the editor asked for).
+   */
+  transcript_entries?: TranscriptEntry[];
+  transcript_fade_ms?: number;
+}
+
+export interface TranscriptEntry {
+  /** Start of this entry's visible window, relative to the clip's start_time_ms. */
+  startMs: number;
+  /** End of this entry's visible window, relative to the clip's start_time_ms. */
+  endMs: number;
+  /** Top row text — the translation in translation videos. */
+  title: string;
+  /** Bottom row text — the original/spoken word in translation videos. */
+  subtitle: string;
 }
 
 export const DEFAULT_TEXT_ANIM: TextAnimationSpec = {
@@ -129,6 +159,44 @@ export const DEFAULT_TEXT_ANIM: TextAnimationSpec = {
   fade_with_transition: false,
   typewriter_cps: 14,
 };
+
+function parseTranscriptEntries(raw: unknown): TranscriptEntry[] | undefined {
+  // The presence of the field (even as an empty array) is how we tell a
+  // transcript-mode clip apart from a regular text clip — so we must
+  // preserve `[]` here rather than collapsing it to `undefined`. Returning
+  // `undefined` only when the field is missing or malformed.
+  if (!Array.isArray(raw)) return undefined;
+  const out: TranscriptEntry[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    const startMs = typeof o.startMs === 'number' ? o.startMs : NaN;
+    const endMs = typeof o.endMs === 'number' ? o.endMs : NaN;
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) continue;
+    out.push({
+      startMs,
+      endMs,
+      title: typeof o.title === 'string' ? o.title : '',
+      subtitle: typeof o.subtitle === 'string' ? o.subtitle : '',
+    });
+  }
+  return out;
+}
+
+/**
+ * Pick the entry whose window contains `relativeMs`. Returns `null` if the
+ * playhead sits in a gap between entries — callers should hide the overlay.
+ */
+export function activeTranscriptEntry(
+  entries: TranscriptEntry[] | undefined,
+  relativeMs: number,
+): TranscriptEntry | null {
+  if (!entries || entries.length === 0) return null;
+  for (const e of entries) {
+    if (relativeMs >= e.startMs && relativeMs < e.endMs) return e;
+  }
+  return null;
+}
 
 function parseWordTimings(raw: unknown): KaraokeWordTiming[] | undefined {
   if (!Array.isArray(raw)) return undefined;
@@ -179,6 +247,11 @@ export function parseTextAnimation(json: string | null): TextAnimationSpec {
         subtitle_text: typeof raw.subtitle_text === 'string' ? raw.subtitle_text : undefined,
         subtitle_style_json:
           typeof raw.subtitle_style_json === 'string' ? raw.subtitle_style_json : undefined,
+        transcript_entries: parseTranscriptEntries(raw.transcript_entries),
+        transcript_fade_ms:
+          typeof raw.transcript_fade_ms === 'number' && raw.transcript_fade_ms >= 0
+            ? raw.transcript_fade_ms
+            : undefined,
       };
     }
     // Legacy shape — `preset` was the IN preset and `loop` was a boolean.

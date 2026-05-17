@@ -11,7 +11,7 @@
 import { parseEffects, type MotionEffect } from '@/utils/motion-fx';
 import { parseKeyframes, valueAt, valuesAt } from '@/utils/keyframes';
 import { computeTransitionStates, transitionFadeMultiplier } from '@/utils/transitions';
-import { parseTextAnimation, computeTextAnimation } from '@/utils/text-animation';
+import { activeTranscriptEntry, parseTextAnimation, computeTextAnimation } from '@/utils/text-animation';
 import { gradeToCSS } from '@/utils/color';
 import { computeMotionFxCanvas, parseCssTransform } from './motion-fx-canvas';
 import { applyTransitionClip, transitionVisualToCanvas } from './transitions-canvas';
@@ -173,7 +173,22 @@ export async function renderFrame(
 
   for (const tt of textTracks) {
     const clipsOnTrack = activeClips
-      .filter((c) => c.track_id === tt.id && c.text_content)
+      .filter((c) => {
+        if (c.track_id !== tt.id) return false;
+        if (c.text_content) return true;
+        // Compound or transcript-mode clips can have empty text_content but
+        // still render via their subtitle row or active transcript entry.
+        if (!c.text_animation_json) return false;
+        try {
+          const raw = JSON.parse(c.text_animation_json) as Record<string, unknown>;
+          return (
+            Array.isArray(raw.transcript_entries) ||
+            typeof raw.subtitle_text === 'string'
+          );
+        } catch {
+          return false;
+        }
+      })
       .sort((a, b) => a.start_time_ms - b.start_time_ms);
 
     for (const clip of clipsOnTrack) {
@@ -191,13 +206,38 @@ export async function renderFrame(
         clip.duration_ms,
         anim,
       );
+      // Transcript mode: pick the entry whose window contains the playhead.
+      // If we're between entries, skip drawing this clip entirely so the
+      // exported frame matches the live preview.
+      const transcriptMode =
+        anim.transcript_entries !== undefined && anim.transcript_entries.length > 0;
+      const transcriptActive = transcriptMode
+        ? activeTranscriptEntry(anim.transcript_entries, relativeMs)
+        : null;
+      if (transcriptMode && !transcriptActive) continue;
+      // Optional fade at entry boundaries — mirrors the preview math.
+      const transcriptFadeMult = (() => {
+        if (!transcriptMode || !transcriptActive) return 1;
+        const fade = anim.transcript_fade_ms ?? 0;
+        if (fade <= 0) return 1;
+        const intoEntry = relativeMs - transcriptActive.startMs;
+        const beforeEnd = transcriptActive.endMs - relativeMs;
+        const a = Math.min(1, Math.max(0, intoEntry / fade));
+        const b = Math.min(1, Math.max(0, beforeEnd / fade));
+        return Math.min(a, b);
+      })();
       // Per-clip opt-in: when on, the text's own animation opacity is multiplied by the
       // V-shape curve of any overlapping video transition.
-      const effectiveOpacity = anim.fade_with_transition
-        ? visual.opacity * txnFadeMult
-        : visual.opacity;
-      const renderedText = visual.visibleText ?? clip.text_content ?? '';
-      if (!renderedText) continue;
+      const effectiveOpacity =
+        (anim.fade_with_transition ? visual.opacity * txnFadeMult : visual.opacity) *
+        transcriptFadeMult;
+      // Transcript mode: title comes from the active entry, not text_content.
+      const renderedText = transcriptActive
+        ? transcriptActive.title
+        : visual.visibleText ?? clip.text_content ?? '';
+      // Allow empty-string entries to still draw the subtitle row below — only
+      // skip when BOTH are empty (and we're not in transcript mode).
+      if (!renderedText && !(transcriptActive && transcriptActive.subtitle)) continue;
 
       // Center the text overlay at the preview's bottom-12% baseline + position offsets.
       const baseY = H * 0.88;
@@ -247,7 +287,8 @@ export async function renderFrame(
       // path — it renders as flat stacked text, which is acceptable since
       // BlockReveal's signature is a brief opening flourish followed by a
       // long settled hold (which the export DOES match exactly).
-      if (anim.subtitle_text && anim.subtitle_text.length > 0) {
+      const subText = transcriptActive ? transcriptActive.subtitle : anim.subtitle_text;
+      if (subText && subText.length > 0) {
         let subStyle: Record<string, unknown> = style;
         if (anim.subtitle_style_json) {
           try {
@@ -265,7 +306,7 @@ export async function renderFrame(
           ctx,
           centerX: 0,
           centerY: subOffsetY,
-          text: anim.subtitle_text,
+          text: subText,
           style: subStyle,
           visual: { ...visual, opacity: effectiveOpacity },
           relativeMs,

@@ -5,6 +5,8 @@ import { useProjectStore } from '@/store/project.store';
 import { useTimelineStore } from '@/store/timeline.store';
 import { useEditorStore } from '@/store/editor.store';
 import { relativeTimeAgo } from '@/utils/time';
+import { DEFAULT_TEXT_ANIM, type TextAnimationSpec } from '@/utils/text-animation';
+import { COMPOUND_TEMPLATES, type TextStyleFull } from '@/utils/text-templates';
 
 export function TopBar(): JSX.Element {
   const navigate = useNavigate();
@@ -14,6 +16,98 @@ export function TopBar(): JSX.Element {
   const redo = useTimelineStore((s) => s.redo);
   const openExport = useEditorStore((s) => s.openExport);
   const openEffects = useEditorStore((s) => s.openEffectsDrawer);
+  const pushToast = useEditorStore((s) => s.pushToast);
+
+  /**
+   * Spawn (or focus) a transcript-mode text clip. Lives on a dedicated text
+   * track called "Transcript" so we never collide with the user's other text
+   * clips. If a transcript clip already exists we just select it — there's no
+   * benefit to multiple transcript clips on the same project, and the user
+   * almost certainly wants to keep editing the same one.
+   */
+  const addTranscript = async () => {
+    if (!project) return;
+    const tracks = useTimelineStore.getState().tracks;
+    const clips = useTimelineStore.getState().clips;
+    // Already have a transcript clip? Just select it.
+    const existing = clips.find((c) => {
+      if (!c.text_animation_json) return false;
+      try {
+        const raw = JSON.parse(c.text_animation_json) as Record<string, unknown>;
+        return Array.isArray(raw.transcript_entries);
+      } catch {
+        return false;
+      }
+    });
+    if (existing) {
+      useTimelineStore.getState().selectClip(existing.id);
+      pushToast({ kind: 'info', message: 'Transcript clip selected — edit entries in the inspector.' });
+      return;
+    }
+
+    let textTrack = tracks.find((t) => t.type === 'text' && t.name === 'Transcript')
+      ?? tracks.find((t) => t.type === 'text');
+    useTimelineStore.getState().pushHistory();
+    if (!textTrack) {
+      try {
+        textTrack = await window.snipette.timeline.addTrack({
+          project_id: project.id,
+          type: 'text',
+          name: 'Transcript',
+        });
+        useTimelineStore.getState().upsertTrack(textTrack);
+      } catch {
+        pushToast({ kind: 'error', message: 'Failed to add transcript track.' });
+        return;
+      }
+    }
+    // Pull title/subtitle styles from the Translation compound template so the
+    // transcript inherits the same translation-on-top, original-bigger-below
+    // look out of the box. Editor can restyle freely from the inspector.
+    const tpl = COMPOUND_TEMPLATES.find((t) => t.id === 'translation');
+    const titleStyle: TextStyleFull = tpl?.clip.titleStyle ?? ({} as TextStyleFull);
+    const subtitleStyle: TextStyleFull = tpl?.clip.subtitleStyle ?? ({} as TextStyleFull);
+    // Span the whole project so the editor never runs out of room. If the
+    // project is empty (duration 0) we still drop a 30s buffer so the clip is
+    // visible and resizeable on the timeline.
+    const durationMs = useTimelineStore.getState().durationMs;
+    const clipDuration = Math.max(durationMs - useTimelineStore.getState().playheadMs, 30_000);
+    try {
+      const created = await window.snipette.timeline.addClip(textTrack.id, {
+        track_id: textTrack.id,
+        project_id: project.id,
+        start_time_ms: Math.max(0, useTimelineStore.getState().playheadMs),
+        duration_ms: clipDuration,
+        source_in_ms: 0,
+        source_out_ms: clipDuration,
+        text_content: '',
+        text_style_json: JSON.stringify(titleStyle),
+      });
+      const anim: TextAnimationSpec = {
+        ...DEFAULT_TEXT_ANIM,
+        compound_role: 'title',
+        subtitle_text: '',
+        subtitle_style_json: JSON.stringify(subtitleStyle),
+        transcript_entries: [],
+        transcript_fade_ms: 0,
+      };
+      const positioned = await window.snipette.timeline.updateClip(created.id, {
+        text_animation_json: JSON.stringify(anim),
+      });
+      useTimelineStore.getState().addClip(positioned);
+      useTimelineStore.getState().selectClip(positioned.id);
+      useTimelineStore.getState().computeDuration();
+      pushToast({
+        kind: 'success',
+        message: 'Transcript clip added — open the inspector and click "Add entry" to begin.',
+      });
+    } catch (e) {
+      pushToast({
+        kind: 'error',
+        message: e instanceof Error ? e.message : 'Could not add transcript.',
+      });
+    }
+  };
   const [isEditingName, setIsEditingName] = useState(false);
   const [draftName, setDraftName] = useState(project?.name ?? '');
   const [lastSaved, setLastSaved] = useState<number>(project?.updated_at ?? Date.now());
@@ -125,6 +219,14 @@ export function TopBar(): JSX.Element {
         </button>
       </div>
       <div style={{ width: 1, height: 20, background: 'var(--border-subtle)' }} />
+      <button
+        className="sn-btn-ghost"
+        onClick={() => void addTranscript()}
+        title="Add a transcript clip — one overlay, many timed entries"
+        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      >
+        <Icons.Caption size={13} /> Transcript
+      </button>
       <button
         className="sn-btn-ghost"
         onClick={openEffects}

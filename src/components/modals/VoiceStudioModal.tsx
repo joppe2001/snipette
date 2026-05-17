@@ -73,6 +73,17 @@ export function VoiceStudioModal(): JSX.Element {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: 'idle' });
   const [autoAddToTimeline, setAutoAddToTimeline] = useState(true);
   const [addedToTimeline, setAddedToTimeline] = useState(false);
+
+  // Teleprompter ("script") panel state.
+  // Persisted per-project so a script you wrote yesterday is still here today.
+  const scriptKey = project ? `snipette.voiceStudio.script.${project.id}` : null;
+  const [script, setScript] = useState<string>('');
+  const [scriptMode, setScriptMode] = useState<'edit' | 'read'>('edit');
+  const [scriptExpanded, setScriptExpanded] = useState<boolean>(false);
+  const [scriptFontSize, setScriptFontSize] = useState<number>(22);
+  const [scriptAutoScroll, setScriptAutoScroll] = useState<boolean>(true);
+  const [scriptScrollSpeed, setScriptScrollSpeed] = useState<number>(30); // px/sec
+  const scriptScrollRef = useRef<HTMLDivElement | null>(null);
   // The save IPC bridge isn't always loaded (preload reload requires Electron restart).
   // Probed once at modal open so we can show a persistent warning rather than failing
   // silently when the user clicks Save.
@@ -117,6 +128,54 @@ export function VoiceStudioModal(): JSX.Element {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // Load persisted script when the modal opens (per project).
+  useEffect(() => {
+    if (!open || !scriptKey) return;
+    try {
+      const saved = window.localStorage.getItem(scriptKey);
+      if (saved) {
+        setScript(saved);
+        setScriptExpanded(true);
+      } else {
+        setScript('');
+      }
+    } catch {
+      // localStorage can throw in private mode — fine to ignore.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, scriptKey]);
+
+  // Persist script edits. Gated on `open` so we don't clobber a saved script with
+  // the empty initial state on app start (the component is always mounted even
+  // when the modal is closed).
+  useEffect(() => {
+    if (!open || !scriptKey) return;
+    try {
+      if (script) window.localStorage.setItem(scriptKey, script);
+      else window.localStorage.removeItem(scriptKey);
+    } catch {
+      // ignore
+    }
+  }, [script, scriptKey, open]);
+
+  // Auto-scroll the teleprompter while recording. Uses rAF so the scroll is smooth
+  // and pauses cleanly when the user pauses the take.
+  useEffect(() => {
+    if (!scriptAutoScroll || scriptMode !== 'read' || session !== 'recording') return;
+    const el = scriptScrollRef.current;
+    if (!el) return;
+    let raf = 0;
+    let last = performance.now();
+    const tick = (t: number) => {
+      const dt = (t - last) / 1000;
+      last = t;
+      el.scrollTop += scriptScrollSpeed * dt;
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [scriptAutoScroll, scriptMode, session, scriptScrollSpeed]);
 
   // Refresh the input-device list once permission is granted (labels are blank until then).
   useEffect(() => {
@@ -226,7 +285,18 @@ export function VoiceStudioModal(): JSX.Element {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPreviewUrl(null);
     setSession('recording');
-  }, [previewUrl]);
+    // If there's a script, flip the teleprompter into read mode and rewind to the
+    // top so the user can start reading immediately. Edit mode would hide the
+    // big-text view — that surprised users into thinking Record "didn't do" anything.
+    if (script.trim()) {
+      setScriptExpanded(true);
+      setScriptMode('read');
+      // Rewind on the next tick, after the read view has mounted.
+      requestAnimationFrame(() => {
+        if (scriptScrollRef.current) scriptScrollRef.current.scrollTop = 0;
+      });
+    }
+  }, [previewUrl, script]);
 
   const pauseRecording = useCallback(() => {
     const r = recorderRef.current;
@@ -568,6 +638,24 @@ export function VoiceStudioModal(): JSX.Element {
                 setVolume={setMonitorVolume}
               />
 
+              <Teleprompter
+                script={script}
+                setScript={setScript}
+                mode={scriptMode}
+                setMode={setScriptMode}
+                expanded={scriptExpanded}
+                setExpanded={setScriptExpanded}
+                fontSize={scriptFontSize}
+                setFontSize={setScriptFontSize}
+                autoScroll={scriptAutoScroll}
+                setAutoScroll={setScriptAutoScroll}
+                scrollSpeed={scriptScrollSpeed}
+                setScrollSpeed={setScriptScrollSpeed}
+                scrollRef={scriptScrollRef}
+                isRecording={session === 'recording'}
+                pushToast={pushToast}
+              />
+
               <LevelStrip rmsDb={levelDb} peakDb={peakDb} session={session} />
               <Waveform canvasRef={waveformCanvasRef} />
 
@@ -800,6 +888,287 @@ function MonitorPanel({
     </Field>
   );
 }
+
+function Teleprompter({
+  script,
+  setScript,
+  mode,
+  setMode,
+  expanded,
+  setExpanded,
+  fontSize,
+  setFontSize,
+  autoScroll,
+  setAutoScroll,
+  scrollSpeed,
+  setScrollSpeed,
+  scrollRef,
+  isRecording,
+  pushToast,
+}: {
+  script: string;
+  setScript: (s: string) => void;
+  mode: 'edit' | 'read';
+  setMode: (m: 'edit' | 'read') => void;
+  expanded: boolean;
+  setExpanded: (v: boolean) => void;
+  fontSize: number;
+  setFontSize: (n: number) => void;
+  autoScroll: boolean;
+  setAutoScroll: (v: boolean) => void;
+  scrollSpeed: number;
+  setScrollSpeed: (n: number) => void;
+  scrollRef: React.MutableRefObject<HTMLDivElement | null>;
+  isRecording: boolean;
+  pushToast: (t: { kind: 'success' | 'error' | 'info'; message: string }) => void;
+}) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const onImportClick = () => fileInputRef.current?.click();
+  const onImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Reset so picking the same file twice still fires onChange.
+    e.target.value = '';
+    if (!file) return;
+    // ~2MB cap — anything bigger is almost certainly not a script.
+    if (file.size > 2 * 1024 * 1024) {
+      pushToast({ kind: 'error', message: 'Script file is too large (max 2 MB)' });
+      return;
+    }
+    try {
+      const text = await file.text();
+      const append = script.trim().length > 0
+        && window.confirm('You already have a script. Append the imported file? (Cancel = replace)');
+      setScript(append ? `${script.replace(/\s+$/, '')}\n\n${text}` : text);
+      setExpanded(true);
+      pushToast({ kind: 'success', message: `Loaded ${file.name}` });
+    } catch (err) {
+      pushToast({
+        kind: 'error',
+        message: err instanceof Error ? err.message : 'Failed to read file',
+      });
+    }
+  };
+
+  // Compact header row when collapsed — saves vertical space until the user wants it.
+  const wordCount = script.trim() ? script.trim().split(/\s+/).length : 0;
+  // Rough estimate at ~150 wpm of conversational reading.
+  const estSeconds = Math.round((wordCount / 150) * 60);
+
+  return (
+    <div
+      style={{
+        border: '1px solid var(--border-subtle)',
+        borderRadius: 8,
+        background: 'var(--bg-base)',
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          padding: '8px 10px',
+          background: 'var(--bg-surface)',
+          borderBottom: expanded ? '1px solid var(--border-subtle)' : 'none',
+        }}
+      >
+        <button
+          onClick={() => setExpanded(!expanded)}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            background: 'transparent',
+            border: 'none',
+            padding: 0,
+            cursor: 'pointer',
+            color: 'var(--text-primary)',
+            fontSize: 11,
+            fontWeight: 700,
+            textTransform: 'uppercase',
+            letterSpacing: '0.08em',
+          }}
+          aria-expanded={expanded}
+        >
+          <span style={{ display: 'inline-block', transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }}>
+            <Icons.Chev size={10} />
+          </span>
+          Script
+        </button>
+        <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>
+          {wordCount > 0
+            ? `${wordCount} word${wordCount === 1 ? '' : 's'} · ~${formatMs(estSeconds * 1000)}`
+            : 'Type what you want to read aloud'}
+        </div>
+        <div style={{ flex: 1 }} />
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".md,.markdown,.txt,text/markdown,text/plain"
+          onChange={onImportFile}
+          style={{ display: 'none' }}
+        />
+        <button
+          onClick={onImportClick}
+          className="sn-btn-ghost"
+          style={{ padding: '4px 10px', fontSize: 11 }}
+          title="Load a .md or .txt file"
+        >
+          <Icons.Folder size={11} /> Import
+        </button>
+        {expanded && (
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button
+              onClick={() => setMode('edit')}
+              style={pillStyle(mode === 'edit')}
+              title="Edit the script"
+            >
+              Edit
+            </button>
+            <button
+              onClick={() => setMode('read')}
+              style={pillStyle(mode === 'read')}
+              disabled={!script.trim()}
+              title={script.trim() ? 'Reader view' : 'Type something to read first'}
+            >
+              Read
+            </button>
+          </div>
+        )}
+      </div>
+
+      {expanded && (
+        <div style={{ padding: 10 }}>
+          {mode === 'edit' ? (
+            <textarea
+              value={script}
+              onChange={(e) => setScript(e.target.value)}
+              placeholder="Paste or type your script here. Switch to Read mode to use it as a teleprompter while you record."
+              style={{
+                width: '100%',
+                minHeight: 140,
+                resize: 'vertical',
+                padding: 10,
+                fontSize: 13,
+                lineHeight: 1.5,
+                fontFamily: 'inherit',
+                background: 'var(--bg-base)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 6,
+                color: 'var(--text-primary)',
+                outline: 'none',
+              }}
+            />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  flexWrap: 'wrap',
+                  fontSize: 11,
+                  color: 'var(--text-secondary)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ marginRight: 4 }}>Size</span>
+                  <button
+                    onClick={() => setFontSize(Math.max(12, fontSize - 2))}
+                    style={sizeBtnStyle}
+                    aria-label="Decrease font size"
+                  >
+                    A−
+                  </button>
+                  <span className="mono" style={{ minWidth: 22, textAlign: 'center' }}>{fontSize}</span>
+                  <button
+                    onClick={() => setFontSize(Math.min(56, fontSize + 2))}
+                    style={sizeBtnStyle}
+                    aria-label="Increase font size"
+                  >
+                    A+
+                  </button>
+                </div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    checked={autoScroll}
+                    onChange={(e) => setAutoScroll(e.target.checked)}
+                  />
+                  Auto-scroll
+                </label>
+                {autoScroll && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 180 }}>
+                    <span style={{ fontSize: 10 }}>Speed</span>
+                    <input
+                      type="range"
+                      min={5}
+                      max={120}
+                      step={1}
+                      value={scrollSpeed}
+                      onChange={(e) => setScrollSpeed(Number(e.target.value))}
+                      style={{ flex: 1 }}
+                    />
+                    <span className="mono" style={{ fontSize: 10, minWidth: 44 }}>{scrollSpeed} px/s</span>
+                  </div>
+                )}
+                <div style={{ flex: 1 }} />
+                <button
+                  onClick={() => {
+                    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+                  }}
+                  className="sn-btn-ghost"
+                  style={{ padding: '4px 10px', fontSize: 11 }}
+                  title="Scroll back to the top"
+                >
+                  Rewind
+                </button>
+              </div>
+              <div
+                ref={scrollRef}
+                style={{
+                  maxHeight: 260,
+                  minHeight: 160,
+                  overflow: 'auto',
+                  padding: '20px 18px',
+                  background: '#0A0A0C',
+                  border: `1px solid ${isRecording ? 'var(--red-alert, #F23A5E)' : 'var(--border-subtle)'}`,
+                  borderRadius: 8,
+                  fontSize,
+                  lineHeight: 1.45,
+                  color: 'var(--text-primary)',
+                  fontFamily: 'Georgia, "Iowan Old Style", serif',
+                  boxShadow: isRecording ? 'inset 0 0 0 1px rgba(242,58,94,0.15)' : 'none',
+                  transition: 'border-color .2s',
+                }}
+              >
+                {script.trim() ? (
+                  renderMarkdown(script)
+                ) : (
+                  <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                    Empty script. Switch to Edit to add lines, or use Import to load a .md / .txt file.
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const sizeBtnStyle: React.CSSProperties = {
+  padding: '2px 6px',
+  fontSize: 10,
+  fontWeight: 700,
+  background: 'var(--bg-base)',
+  border: '1px solid var(--border-subtle)',
+  borderRadius: 4,
+  color: 'var(--text-primary)',
+  cursor: 'pointer',
+};
 
 function LevelStrip({
   rmsDb,
@@ -1179,6 +1548,144 @@ function formatMs(ms: number): string {
   const s = total % 60;
   const cs = Math.floor((ms % 1000) / 10);
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
+}
+
+/**
+ * Tiny markdown renderer for the teleprompter read view. Intentionally minimal —
+ * we only handle what a script-reader cares about: headings, emphasis, blockquotes,
+ * and paragraph breaks. No links, lists, code blocks, or HTML — keep teleprompter
+ * output clean and predictable.
+ */
+function renderMarkdown(md: string): React.ReactNode {
+  const blocks: React.ReactNode[] = [];
+  const lines = md.split(/\r?\n/);
+  let paragraph: string[] = [];
+  let key = 0;
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    const text = paragraph.join(' ');
+    blocks.push(
+      <p key={key++} style={{ margin: '0 0 0.6em' }}>
+        {renderInlineMd(text)}
+      </p>,
+    );
+    paragraph = [];
+  };
+
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (line.trim() === '') {
+      flushParagraph();
+      continue;
+    }
+    const heading = line.match(/^(#{1,3})\s+(.*)$/);
+    if (heading) {
+      flushParagraph();
+      const level = heading[1].length;
+      const scale = level === 1 ? 1.5 : level === 2 ? 1.3 : 1.15;
+      blocks.push(
+        <div
+          key={key++}
+          style={{
+            fontSize: `${scale}em`,
+            fontWeight: 700,
+            margin: '0.6em 0 0.3em',
+            lineHeight: 1.25,
+          }}
+        >
+          {renderInlineMd(heading[2])}
+        </div>,
+      );
+      continue;
+    }
+    const quote = line.match(/^>\s?(.*)$/);
+    if (quote) {
+      flushParagraph();
+      blocks.push(
+        <div
+          key={key++}
+          style={{
+            fontStyle: 'italic',
+            opacity: 0.85,
+            paddingLeft: '0.9em',
+            borderLeft: '3px solid rgba(255,255,255,0.2)',
+            margin: '0.4em 0',
+          }}
+        >
+          {renderInlineMd(quote[1])}
+        </div>,
+      );
+      continue;
+    }
+    paragraph.push(line);
+  }
+  flushParagraph();
+  return blocks;
+}
+
+/**
+ * Inline parser for **bold**, *italic*, and `code`. Walks the string left-to-right
+ * picking off the earliest matching marker; anything that doesn't match is treated
+ * as plain text. Avoids regex `g` flag state and keeps unmatched `*` literal.
+ */
+function renderInlineMd(text: string): React.ReactNode {
+  const out: React.ReactNode[] = [];
+  let i = 0;
+  let buf = '';
+  let key = 0;
+  const flushBuf = () => {
+    if (buf) {
+      out.push(buf);
+      buf = '';
+    }
+  };
+  while (i < text.length) {
+    if (text.startsWith('**', i)) {
+      const close = text.indexOf('**', i + 2);
+      if (close > i + 2) {
+        flushBuf();
+        out.push(<b key={key++}>{text.slice(i + 2, close)}</b>);
+        i = close + 2;
+        continue;
+      }
+    }
+    if (text[i] === '*') {
+      const close = text.indexOf('*', i + 1);
+      if (close > i + 1) {
+        flushBuf();
+        out.push(<i key={key++}>{text.slice(i + 1, close)}</i>);
+        i = close + 1;
+        continue;
+      }
+    }
+    if (text[i] === '`') {
+      const close = text.indexOf('`', i + 1);
+      if (close > i + 1) {
+        flushBuf();
+        out.push(
+          <code
+            key={key++}
+            style={{
+              background: 'rgba(255,255,255,0.08)',
+              padding: '0 4px',
+              borderRadius: 3,
+              fontFamily: 'ui-monospace, Menlo, monospace',
+              fontSize: '0.9em',
+            }}
+          >
+            {text.slice(i + 1, close)}
+          </code>,
+        );
+        i = close + 1;
+        continue;
+      }
+    }
+    buf += text[i];
+    i++;
+  }
+  flushBuf();
+  return out;
 }
 
 function drawWaveform(canvas: HTMLCanvasElement | null, samples: Float32Array): void {
