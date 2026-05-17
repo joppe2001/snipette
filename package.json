@@ -1,0 +1,79 @@
+{
+  "name": "snipette",
+  "version": "0.1.0",
+  "description": "Local-first, offline video editor for creators. Cut local. Stay private. Go viral.",
+  "private": true,
+  "author": "Snipette",
+  "license": "MIT",
+  "main": "out/main/main.js",
+  "scripts": {
+    "postinstall": "node node_modules/ffmpeg-static/install.js && electron-builder install-app-deps",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "build:check": "tsc --noEmit && electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "rebuild": "electron-builder install-app-deps",
+    "start": "electron .",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,css,md}\""
+  },
+  "dependencies": {
+    "@react-spring/web": "^9.7.4",
+    "better-sqlite3": "^11.3.0",
+    "date-fns": "^3.6.0",
+    "electron-log": "^5.2.0",
+    "electron-store": "^10.0.0",
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0",
+    "framer-motion": "^11.11.0",
+    "mp4-muxer": "^5.2.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.27.0",
+    "uuid": "^10.0.0",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.7.5",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.0",
+    "@types/uuid": "^10.0.0",
+    "@vitejs/plugin-react": "^4.3.2",
+    "autoprefixer": "^10.4.20",
+    "electron": "^32.1.2",
+    "electron-builder": "^25.1.7",
+    "electron-vite": "^2.3.0",
+    "postcss": "^8.4.47",
+    "prettier": "^3.3.3",
+    "tailwindcss": "^3.4.13",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8"
+  },
+  "build": {
+    "appId": "app.snipette.local",
+    "productName": "Snipette",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**",
+      "node_modules/ffprobe-static/**",
+      "node_modules/better-sqlite3/**"
+    ],
+    "mac": {
+      "category": "public.app-category.video"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}
