@@ -1507,6 +1507,12 @@ function TextOverlay({
         position: 'absolute',
         left: '50%',
         bottom: '12%',
+        // Video transitions (Push/Slide) temporarily set z-index 10 on the
+        // incoming clip to slide it over the outgoing one. Without an explicit
+        // z-index here, text overlays default to `auto` and get visually
+        // covered by the transitioning video. Anything above 10 keeps the
+        // text on top throughout the transition window.
+        zIndex: 20,
         opacity: effectiveOpacity,
         // Compose: center the box, apply static + animated position offsets, rotate, then run animation transform.
         transform: isEditing
