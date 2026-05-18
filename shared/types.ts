@@ -196,6 +196,42 @@ export interface CaptionSegment {
   /** Word-level timestamps when the transcriber emitted token offsets. Optional —
    *  renderers should fall back to even-split synthetic word timings if absent. */
   words?: CaptionWord[];
+  /** Translations of `text` keyed by ISO 639-1 code (e.g. `ja`, `es`). Filled by
+   *  the Ollama translation pipeline; absent until the user runs Translate. */
+  translations?: Record<string, string>;
+}
+
+/** JLPT level — tunes the Japanese translation register and vocabulary. */
+export type JlptLevel = 'N1' | 'N2' | 'N3' | 'N4' | 'N5';
+
+/** Speaker register / mood. For Japanese, `keigo` is the formal-business honorific register;
+ *  for other languages the four-step casual→formal scale still applies. */
+export type TranslationMood = 'casual' | 'polite' | 'formal' | 'keigo';
+
+export interface OllamaModel {
+  name: string;
+  size: number;
+  parameter_size?: string;
+  family?: string;
+}
+
+export interface TranslateOpts {
+  /** ISO 639-1 target. Currently `ja` is fully supported; others passthrough to the model. */
+  targetLang: string;
+  /** Optional Ollama model override. Defaults to the language→model map in the service. */
+  model?: string;
+  /** Japanese-only: tunes vocabulary/grammar register. Ignored for other languages. */
+  jlptLevel?: JlptLevel;
+  /** Speaker register. Defaults to `polite` when omitted. */
+  mood?: TranslationMood;
+}
+
+export interface TranslateProgress {
+  /** 0-100. */
+  percent: number;
+  /** Index of the segment currently being translated, when known. */
+  segmentIndex?: number;
+  segmentCount?: number;
 }
 
 export type ExportQuality = 'draft' | 'good' | 'high' | 'best' | 'lossless';
@@ -403,6 +439,12 @@ export const CH = {
   captionsTranscribe: 'captions:transcribe',
   captionsCancel: 'captions:cancel',
   captionsProgressEvent: 'captions:progress',
+  captionsTranslate: 'captions:translate',
+  captionsTranslateCancel: 'captions:translateCancel',
+  captionsTranslateProgressEvent: 'captions:translateProgress',
+  // Ollama — local LLM bridge (used by translation, may grow into other AI features)
+  ollamaListModels: 'ollama:listModels',
+  ollamaAvailable: 'ollama:available',
   // Settings
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',

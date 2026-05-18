@@ -1434,6 +1434,13 @@ function TranscriptEditor({
 }) {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [translateBusy, setTranslateBusy] = useState(false);
+  const [translateProgress, setTranslateProgress] = useState(0);
+  const [translateLang, setTranslateLang] = useState<'ja'>('ja');
+  const [jlptLevel, setJlptLevel] = useState<'N1' | 'N2' | 'N3' | 'N4' | 'N5'>('N3');
+  const [translateMood, setTranslateMood] = useState<'casual' | 'polite' | 'formal' | 'keigo'>(
+    'polite',
+  );
   // Only assets that actually carry audio are valid transcribe sources. Images
   // don't, pure-video without audio doesn't either — but we don't have a
   // has_audio flag here, so we keep this lenient: anything that's not an image
@@ -1625,6 +1632,89 @@ function TranscriptEditor({
     }
   };
 
+  /**
+   * Translate every entry's `subtitle` (the transcribed line) into the target
+   * language and write the result into `title` (the translation row). Skips
+   * entries whose subtitle is empty. Existing titles get overwritten with a
+   * confirm so the user doesn't lose hand-typed work by accident.
+   */
+  const translateEntries = async () => {
+    if (translateBusy) return;
+    if (entries.length === 0) {
+      pushToast({ kind: 'info', message: 'No entries yet. Transcribe or add entries first.' });
+      return;
+    }
+    const translatableIdx = entries
+      .map((e, i) => (e.subtitle.trim().length > 0 ? i : -1))
+      .filter((i) => i >= 0);
+    if (translatableIdx.length === 0) {
+      pushToast({
+        kind: 'info',
+        message: 'No subtitle text to translate. Fill the bottom row first.',
+      });
+      return;
+    }
+    const ollamaUp = await window.snipette.ollama.available();
+    if (!ollamaUp) {
+      pushToast({
+        kind: 'error',
+        message:
+          'Ollama is not running. Start it with `ollama serve` (or open the Ollama app) and retry.',
+      });
+      return;
+    }
+    const existingTitles = translatableIdx.filter((i) => entries[i].title.trim().length > 0).length;
+    if (
+      existingTitles > 0 &&
+      !window.confirm(
+        `This will overwrite ${existingTitles} existing title${existingTitles === 1 ? '' : 's'} with the translation. Continue?`,
+      )
+    ) {
+      return;
+    }
+    setTranslateBusy(true);
+    setTranslateProgress(0);
+    const off = window.snipette.captions.onTranslateProgress((p) =>
+      setTranslateProgress(p.percent),
+    );
+    try {
+      const payload = translatableIdx.map((i) => ({
+        startMs: entries[i].startMs,
+        endMs: entries[i].endMs,
+        text: entries[i].subtitle,
+        confidence: 1,
+      }));
+      const translated = await window.snipette.captions.translate(payload, {
+        targetLang: translateLang,
+        jlptLevel: translateLang === 'ja' ? jlptLevel : undefined,
+        mood: translateMood,
+      });
+      const next = entries.map((e) => ({ ...e }));
+      for (let k = 0; k < translatableIdx.length; k += 1) {
+        const idx = translatableIdx[k];
+        const t = translated[k]?.translations?.[translateLang];
+        if (t) next[idx] = { ...next[idx], title: t };
+      }
+      pushHistory();
+      commitAnim({ transcript_entries: next });
+      pushToast({
+        kind: 'success',
+        message: `Translated ${translatableIdx.length} entr${translatableIdx.length === 1 ? 'y' : 'ies'} to ${translateLang.toUpperCase()}${
+          translateLang === 'ja' ? ` · ${jlptLevel}` : ''
+        } · ${translateMood}.`,
+      });
+    } catch (e) {
+      pushToast({
+        kind: 'error',
+        message: e instanceof Error ? e.message : 'Translation failed.',
+      });
+    } finally {
+      off();
+      setTranslateBusy(false);
+      setTranslateProgress(0);
+    }
+  };
+
   return (
     <div>
       <div style={{ fontSize: 10.5, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.45 }}>
@@ -1681,6 +1771,138 @@ function TranscriptEditor({
       >
         <Icons.Mic size={12} /> {busy ? `Transcribing… ${progress}%` : 'Transcribe from audio'}
       </button>
+
+      <div
+        style={{
+          marginBottom: 10,
+          padding: 8,
+          background: 'var(--bg-base)',
+          border: '1px solid var(--border-subtle)',
+          borderRadius: 6,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+          minWidth: 0,
+          overflow: 'hidden',
+        }}
+      >
+        <div style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+          Translate entries into the top row, locally via Ollama.
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', minWidth: 0 }}>
+          <label
+            style={{
+              flex: '1 1 140px',
+              minWidth: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+            }}
+          >
+            <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>Language</span>
+            <select
+              value={translateLang}
+              onChange={(e) => setTranslateLang(e.target.value as 'ja')}
+              disabled={translateBusy || busy}
+              style={{
+                width: '100%',
+                minWidth: 0,
+                padding: '6px 8px',
+                background: 'var(--bg-base)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 6,
+                fontSize: 11,
+                cursor: 'pointer',
+              }}
+            >
+              <option value="ja">Japanese</option>
+            </select>
+          </label>
+          {translateLang === 'ja' && (
+            <label
+              style={{
+                flex: '0 1 86px',
+                minWidth: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+              }}
+            >
+              <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>JLPT</span>
+              <select
+                value={jlptLevel}
+                onChange={(e) =>
+                  setJlptLevel(e.target.value as 'N1' | 'N2' | 'N3' | 'N4' | 'N5')
+                }
+                disabled={translateBusy || busy}
+                style={{
+                  width: '100%',
+                  minWidth: 0,
+                  padding: '6px 8px',
+                  background: 'var(--bg-base)',
+                  color: 'var(--text-primary)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 6,
+                  fontSize: 11,
+                  cursor: 'pointer',
+                }}
+              >
+                <option value="N5">N5</option>
+                <option value="N4">N4</option>
+                <option value="N3">N3</option>
+                <option value="N2">N2</option>
+                <option value="N1">N1</option>
+              </select>
+            </label>
+          )}
+        </div>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+          <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>Mood</span>
+          <select
+            value={translateMood}
+            onChange={(e) =>
+              setTranslateMood(e.target.value as 'casual' | 'polite' | 'formal' | 'keigo')
+            }
+            disabled={translateBusy || busy}
+            style={{
+              width: '100%',
+              minWidth: 0,
+              padding: '6px 8px',
+              background: 'var(--bg-base)',
+              color: 'var(--text-primary)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 6,
+              fontSize: 11,
+              cursor: 'pointer',
+            }}
+          >
+            <option value="casual">
+              {translateLang === 'ja' ? 'Casual (タメ口)' : 'Casual'}
+            </option>
+            <option value="polite">
+              {translateLang === 'ja' ? 'Polite (です・ます)' : 'Polite'}
+            </option>
+            <option value="formal">
+              {translateLang === 'ja' ? 'Formal (書き言葉)' : 'Formal'}
+            </option>
+            <option value="keigo">
+              {translateLang === 'ja' ? 'Keigo (敬語)' : 'Honorific'}
+            </option>
+          </select>
+        </label>
+        <button
+          onClick={() => void translateEntries()}
+          className="sn-btn-ghost"
+          disabled={translateBusy || busy || entries.length === 0}
+          style={{ width: '100%', justifyContent: 'center' }}
+        >
+          <Icons.Mic size={12} />{' '}
+          {translateBusy
+            ? `Translating… ${translateProgress}%`
+            : `Translate entries${translateLang === 'ja' ? ` · ${jlptLevel}` : ''} · ${translateMood}`}
+        </button>
+      </div>
 
       <FieldRow>
         <Field label={`Fade · ${fadeMs} ms`}>

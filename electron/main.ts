@@ -30,6 +30,7 @@ import { registerBackupHandlers } from './ipc/backup.ipc';
 import { registerWebExportHandlers } from './ipc/web-export.ipc';
 import { registerVoiceRecordingHandlers } from './ipc/voice-recording.ipc';
 import { registerTtsHandlers } from './ipc/tts.ipc';
+import { registerTranslationHandlers } from './ipc/translation.ipc';
 
 log.transports.file.level = 'info';
 log.transports.console.level = 'debug';
@@ -189,6 +190,7 @@ app.whenReady().then(async () => {
   registerWebExportHandlers(() => mainWindow);
   registerVoiceRecordingHandlers(() => mainWindow);
   registerTtsHandlers(() => mainWindow);
+  registerTranslationHandlers(() => mainWindow);
 
   await createMainWindow();
 

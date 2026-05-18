@@ -15,6 +15,9 @@ import type {
   ExportStatus,
   FilePickerOpts,
   CaptionSegment,
+  OllamaModel,
+  TranslateOpts,
+  TranslateProgress,
   AppInfo,
   WebExportAudioOpts,
   WebExportMuxOpts,
@@ -119,6 +122,15 @@ const api = {
       ipcRenderer.invoke(CH.captionsTranscribe, assetId),
     cancel: (): Promise<void> => ipcRenderer.invoke(CH.captionsCancel),
     onProgress: (cb: (p: { percent: number }) => void) => on(CH.captionsProgressEvent, cb),
+    translate: (segments: CaptionSegment[], opts: TranslateOpts): Promise<CaptionSegment[]> =>
+      ipcRenderer.invoke(CH.captionsTranslate, segments, opts),
+    cancelTranslate: (): Promise<void> => ipcRenderer.invoke(CH.captionsTranslateCancel),
+    onTranslateProgress: (cb: (p: TranslateProgress) => void) =>
+      on(CH.captionsTranslateProgressEvent, cb),
+  },
+  ollama: {
+    available: (): Promise<boolean> => ipcRenderer.invoke(CH.ollamaAvailable),
+    listModels: (): Promise<OllamaModel[]> => ipcRenderer.invoke(CH.ollamaListModels),
   },
   settings: {
     get: (key: string): Promise<string | null> => ipcRenderer.invoke(CH.settingsGet, key),
